@@ -1,0 +1,13 @@
+# Maven build output
+target/
+
+# Local node data written by running clusters
+data/
+
+# IDE and editor files
+.idea/
+*.iml
+.vscode/
+
+# macOS
+.DS_Store
