@@ -32,7 +32,9 @@ flowchart LR
 
 Each node is a single-threaded, event-driven state machine (tick, receive, propose) with no internal clock or threads. That is what lets the same code run under a seeded simulated network in tests and under gRPC in production.
 
-## Job lifecycle
+## Run lifecycle
+
+A job is either ACTIVE or CANCELLED. Each time it fires it creates a run, and the run moves through the states below. A one-shot job whose run has succeeded stays ACTIVE; the result is on the run.
 
 ```mermaid
 stateDiagram-v2

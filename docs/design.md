@@ -132,6 +132,8 @@ The state machine is a pure, deterministic function of the committed log. It nev
 | `ConfigChange(...)` | Membership change (section 4.5). |
 
 ### 5.2 Run lifecycle
+A job is either ACTIVE or CANCELLED. The states below belong to a run, and a job whose only run has succeeded stays ACTIVE. SUBMITTED is the moment the job is accepted, before any run exists.
+
 SUBMITTED (job accepted) then SCHEDULED (a run exists with a fire time) then ASSIGNED (given to a worker with a token) then RUNNING (worker confirmed start) then SUCCEEDED or FAILED. A failed or expired run goes back to SCHEDULED until it reaches its retry limit, after which it stays FAILED. Recurring jobs get a new run for each cron fire time.
 
 ### 5.3 Time
