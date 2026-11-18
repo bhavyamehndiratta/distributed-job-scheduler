@@ -84,7 +84,7 @@ Syncing the log after every single append made the first benchmark flood crawl a
 
 ### 4.4 Snapshots and log compaction
 - When the log grows past a configured size, a node serializes the state machine to a snapshot file tagged with `lastIncludedIndex` and `lastIncludedTerm`, then discards log entries up to that index.
-- A follower that is so far behind that the leader no longer has the entries it needs receives an InstallSnapshot RPC instead, sent in chunks, then continues with normal AppendEntries.
+- A follower that is so far behind that the leader no longer has the entries it needs receives the whole snapshot in one InstallSnapshot RPC instead, then continues with normal AppendEntries.
 - Snapshot writes use the same temp-file-and-rename pattern as the metadata file.
 - A snapshot contains everything needed to rebuild the node without the discarded log: the full scheduler state (jobs, runs, current fencing tokens, completed runs and idempotency-key records with their timestamps) and the latest cluster configuration as of `lastIncludedIndex`. The configuration must be included explicitly, because the configuration entry that defined it may have been compacted away.
 

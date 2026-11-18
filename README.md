@@ -167,7 +167,7 @@ Read these honestly:
 
 ## How AI tools were used
 
-Most of the code, tests and documentation in this repository were written by Claude (Anthropic) in a long chat session, step by step. The author directed the work, chose the scope and the design trade-offs, ran every build, test sweep and benchmark on their own machine, and approved the design document. The author does not claim to have typed the code. The things that went wrong are listed because they show where AI-written code needed checking:
+Most of the code, tests and documentation in this repository were written by Claude (Anthropic) in a long chat session, step by step. The author set the goals and scope, reviewed and approved the design decisions Claude proposed (and could overrule them), approved the design document, and ran every build, test sweep and benchmark on their own machine. The author does not claim to have typed the code. The things that went wrong are listed because they show where AI-written code needed checking:
 
 1. **The first effect store was wrong.** The AI's first design only rejected lower fencing tokens, which still allows two effects from a paused stale worker and its retry. A review of the design caught it; the fix was per-run dedupe plus the token check.
 2. **A test suite had a gap that mutation testing exposed.** A deliberate bug in PreVote survived the AI's election tests. A direct test was added.
