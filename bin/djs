@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Usage: bin/djs node ...    run a cluster member
+#        bin/djs worker ...  run a worker
+#        bin/djs submit|status|cancel|list ...   client commands
+# Run `mvn -B package -DskipTests` once first so target/classes exists.
+set -e
+cd "$(dirname "$0")/.."
+[ -f target/cp.txt ] || mvn -q -B dependency:build-classpath -Dmdep.outputFile=target/cp.txt
+case "$1" in
+  node) shift; MAIN=ServerMain ;;
+  worker) shift; MAIN=WorkerMain ;;
+  bench) shift; MAIN=Bench ;;
+  *) MAIN=Cli ;;
+esac
+exec java -cp "target/classes:$(cat target/cp.txt)" io.github.bhavyamehndiratta.djs.runtime.$MAIN "$@"

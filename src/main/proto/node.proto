@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package djs;
+
+option java_multiple_files = true;
+option java_package = "io.github.bhavyamehndiratta.djs.wire.pb";
+option java_outer_classname = "NodeProto";
+
+// One message between two members of the system. The sender advertises the
+// address it listens on, so the receiver can answer workers and clients that
+// are not in the static cluster list. The body is the line produced by
+// MessageCodec, which is also what the tests round-trip.
+message Envelope {
+  string from = 1;
+  string from_address = 2;
+  string message = 3;
+}
+
+message Ack {}
+
+service NodeService {
+  rpc Deliver(Envelope) returns (Ack);
+}

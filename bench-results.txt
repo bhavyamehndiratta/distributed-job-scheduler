@@ -1,0 +1,11 @@
+BENCH HARDWARE: Apple M4, 10 cores, 16 GB RAM, Mac OS X 15.5 aarch64, Java 21.0.13.0.3, max heap 4096 MB
+BENCH SETUP: real gRPC on localhost, FileRaftLog with group commit (one fsync per batch, outgoing messages held until it completes), all nodes, 32 workers and clients in one JVM; tick 20 ms (election timeout 200 to 380 ms, heartbeat 40 ms), job body is one tick
+BENCH LATENCY 3 nodes: fixed rate 20 jobs/s for 10 s: 200 acked, 200 executed, 0 errors; submit-to-execution-start p50 74.6 ms, p99 116.0 ms, max 130.1 ms
+BENCH THROUGHPUT 3 nodes: 2000 jobs from 16 client threads, 32 workers: 2000 acked in 38.0 s (52.6 committed submits/s), 2000 executed in 41.8 s (47.8 jobs/s end to end), 0 errors
+BENCH INTEGRITY 3 nodes: 0 acked jobs not executed, 0 duplicate effects
+BENCH FAILOVER 3 nodes: 5 of 5 trials; kill leader to new leader: median 241.6 ms, p95 459.6 ms, max 459.6 ms; kill leader to first committed write: median 915.3 ms, p95 927.8 ms, max 927.8 ms
+BENCH LATENCY 5 nodes: fixed rate 20 jobs/s for 10 s: 200 acked, 200 executed, 0 errors; submit-to-execution-start p50 6917.1 ms, p99 18178.7 ms, max 18922.4 ms
+BENCH THROUGHPUT 5 nodes: 2000 jobs from 16 client threads, 32 workers: 2000 acked in 40.8 s (49.0 committed submits/s), 2000 executed in 50.9 s (39.3 jobs/s end to end), 0 errors
+BENCH INTEGRITY 5 nodes: 0 acked jobs not executed, 0 duplicate effects
+BENCH FAILOVER 5 nodes: 5 of 5 trials; kill leader to new leader: median 305.4 ms, p95 318.3 ms, max 318.3 ms; kill leader to first committed write: median 926.1 ms, p95 931.1 ms, max 931.1 ms
+BENCH DONE

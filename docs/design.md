@@ -79,6 +79,9 @@ Trade-off: the event-driven style is less natural to write than "one thread per 
 - A node persists state **before** it replies to the RPC that changed it (votes, appended entries). Replying first and then crashing would let the node vote twice in one term, or acknowledge entries it then forgets.
 - Storage sits behind an interface. Tests use an in-memory implementation that can simulate a crash by discarding anything not yet "fsynced".
 
+### 4.3.1 Group commit
+Syncing the log after every single append made the first benchmark flood crawl at 3.2 submits per second, because every node thread sat in `FileChannel.force`. The log now supports deferred sync: appends and truncations are written without fsync and marked dirty, and the node driver processes a batch of queued tasks (up to 256) plus the tick, then calls `sync()` once and only then releases the outgoing messages (`BatchedTransport` holds them until the flush). Nothing leaves a node before the entries it depends on are durable, so the persistence rules in 4.3 are unchanged; only the number of fsyncs per entry drops. The simulated chaos runs use in-memory or per-append logs, so group commit is exercised by the real-file and gRPC tests and by the benchmark integrity checks, not by the seeded chaos sweeps.
+
 ### 4.4 Snapshots and log compaction
 - When the log grows past a configured size, a node serializes the state machine to a snapshot file tagged with `lastIncludedIndex` and `lastIncludedTerm`, then discards log entries up to that index.
 - A follower that is so far behind that the leader no longer has the entries it needs receives an InstallSnapshot RPC instead, sent in chunks, then continues with normal AppendEntries.
@@ -121,7 +124,7 @@ The state machine is a pure, deterministic function of the committed log. It nev
 |---|---|
 | `SubmitJob(jobId, spec, idempotencyKey)` | Creates the job. A repeat with the same idempotency key returns the existing job instead of creating a second one. |
 | `CancelJob(jobId)` | Marks the job cancelled; no further runs are scheduled. |
-| `FireRun(jobId, scheduledTime)` | Creates a run for that scheduled time. The run id is `jobId + scheduledTime`. Each job stores the latest scheduled time it has fired, and a `FireRun` at or before that time is ignored, so duplicates are rejected without keeping every past run id forever. |
+| `FireRun(jobId, scheduledTime, skippedCount)` | Creates a run for that scheduled time. The run id is `jobId + scheduledTime`. Each job stores the latest scheduled time it has fired, and a `FireRun` at or before that time is ignored, so duplicates are rejected without keeping every past run id forever. `skippedCount` is chosen by the leader (the number of missed fire times it is skipping under the misfire policy) and stored in the entry, so the state machine never reads a clock. |
 | `AssignRun(runId, workerId, leaseTicks)` | Assigns the run to a worker. The run's fencing token is set to the log index of this entry. |
 | `RunStarted(runId, token)` | Accepted only if `token` equals the run's current token. |
 | `RunCompleted(runId, token, outcome)` | Accepted only if `token` equals the run's current token; records the run as finished. |
@@ -192,20 +195,62 @@ After each scenario, the faults are healed and the system is given time to settl
 3. **Log agreement**: all nodes' committed log prefixes are identical.
 4. **Election safety**: no term ever had two leaders.
 
-A failing seed is replayed exactly by passing it back to the harness. Target: 1,000+ scenarios per run, with every failure fixed.
+5. **Linearizable reads**: a probe client sends `GetJob` to every node that is up. A reply must show any job acknowledged before the request was sent, and must show its run as SUCCEEDED if it had already succeeded on some node. Seventy percent of reads target the three newest acknowledged jobs. In 40 percent of partitions the current leader is isolated together with the probe and its timers are stalled for 20 to 100 ticks (`SchedulerCluster.stallNode`), which is the stale-leader case ReadIndex exists for.
+
+A failing seed is replayed exactly by passing it back to the harness. The sweeps in section 12 run 1,000 scenarios per harness with zero failures.
 
 ## 10. Bugs the harness caught
-Filled in later, from real harness failures, with the seed, root cause and fix for each.
+Each entry is a real failure found by the harness or by mutation testing while building this project. Seeds are not listed because the fixed code no longer fails; each bug now has a regression test.
+
+1. **Stale worker wrote a second effect.** The first effect store only rejected lower fencing tokens. A paused worker holding token 5 could write before the retry holding token 9, giving two effects for one run. Fix: the store also dedupes per run id, so a second write for the same run is reported as already applied. Negative control: the naive store (`EffectStore(false)`) is caught duplicating effects in 59 of 60 seeds, and the protected store in none.
+2. **PreVote could be ignored.** A deliberate mutation that made PreVote ignore a live leader survived the election tests. A direct PreVote unit test was added and now kills it.
+3. **Run stuck in ASSIGNED.** A worker's one-shot Started message went to a follower and was never retried. Fix: the first valid worker heartbeat also proposes `RunStarted`.
+4. **Retried submit reported DUPLICATE.** Over real gRPC a retried `Submit` came back DUPLICATE and the client treated it as a failure. Fix: the client reports DUPLICATE on a retried request for the same job id (and cancel) as ACCEPTED.
+5. **Membership vote refusal deadlock.** The membership chaos harness found 7 of 200 seeds with no leader after healing. Nodes refused to vote for candidates missing from their own, stale, configuration, so two voters with different config views blocked each other. Fix: votes depend on the log and the leader lease only. A removed node cannot win because it never receives its own removal entry, so voters reject it on log freshness. The same harness also exposed a promote of a learner that had received nothing.
+6. **ReadIndex mutant survived the chaos read check.** A mutant whose `readyReads` ignored the majority confirmation was killed by the unit tests but passed two versions of the chaos read check (200 seeds). A cut-off leader steps down through CheckQuorum within 10 to 20 ticks, about when a new leader commits, so the stale window almost never opened. Adding the timer-stall fault made the mutant fail 119 of 200 seeds with "stale read: acked job reported missing".
+7. **Benchmark flood at 3.2 submits per second.** Thread dumps showed every node thread blocked in `FileChannel.force`. The first hypothesis, a slow fsync, was falsified by an isolated test (median 3.9 ms); the cause was one fsync per entry. Fixed with group commit (4.3.1).
 
 ## 11. Limitations and what would change at larger scale
 - **Single Raft group.** All writes go through one leader, so throughput is capped by one machine and by fsync latency. At 100x load, jobs would be sharded across many Raft groups by job id, as systems such as CockroachDB and TiKV do, with a placement service assigning shards to nodes.
-- **Batching and pipelining.** The leader would batch many entries per AppendEntries and per fsync, and pipeline AppendEntries without waiting for each reply.
+- **Pipelining.** Entries are already batched per AppendEntries (up to 64) and per fsync (4.3.1). AppendEntries are not pipelined: a larger system would send the next batch without waiting for each reply.
 - **Across datacenters.** Commit latency becomes a cross-datacenter round trip. Common responses are placing a majority of replicas in nearby regions, using leader leases with bounded clock uncertainty for reads, and adding follower reads for queries that can tolerate slightly stale data.
 - **Leader-driven timers.** Only the leader fires runs, so a large number of recurring jobs concentrates timer work on one node. Sharding addresses this as well.
 - **Handler model.** Jobs are limited to registered handlers whose effects can be fenced.
+- **Whole snapshots.** InstallSnapshot sends the snapshot in one message (the gRPC inbound limit is raised to 256 MB). A larger state would need chunked transfer.
+- **Housekeeping scan.** The leader's housekeeping iterates all runs every 2 ticks, which is linear in the number of runs. An index of active runs would remove it.
+- **Standalone worker effects.** `WorkerMain` uses an in-memory effect store. The exactly-once checks run against the shared store used by the harness and the benchmark.
+- **Group commit coverage.** See 4.3.1: the seeded chaos runs do not exercise it.
 
 ## 12. Results
-Filled in later from benchmark runs on real hardware, with the hardware recorded.
+### 12.1 Chaos sweeps (simulated network, seeds 1 to 1000 per harness)
+All four harnesses finished with 0 failed scenarios.
+
+| Harness | Scenarios | Notable counts |
+|---|---|---|
+| Raft | 1000 | 85306 proposals, 83187 committed, 43883 crashes, 43801 partitions, 17685 elected terms, 28846 snapshots taken, 9011 installed |
+| Scheduler | 1000 | 135814 jobs submitted, 134155 acked, 134155 succeeded with exactly one effect; 34981 node crashes, 30804 worker crashes, 40743 worker pauses, 36185 partitions; 1531033 read requests, 186427 answered |
+| Scheduler with snapshots | 1000 | 134155 jobs succeeded, 123742 snapshots taken, 29833 installed |
+| Membership | 1000 | 93477 proposals, 93175 committed, 50438 crashes, 38798 partitions; 9821 learners added, 5318 promotions, 8916 removals, 23495 config entries committed |
+
+### 12.2 Benchmarks (real gRPC on localhost, files on disk)
+Hardware: Apple M4, 10 cores, 16 GB RAM, macOS 15.5, Java 21.0.13, max heap 4096 MB. All nodes, 32 workers and the client threads run in one JVM, so the numbers describe a single machine and not a network. Tick 20 ms (election timeout 200 to 380 ms, heartbeat 40 ms). The job body lasts one tick. Command: `bin/djs bench --rate 20 --seconds 10 --jobs 2000 --trials 5`.
+
+| Measure | 3 nodes | 5 nodes |
+|---|---|---|
+| Submit to execution start at 20 jobs/s, p50 | 74.6 ms | overloaded (6.9 s) |
+| Submit to execution start at 20 jobs/s, p99 | 116.0 ms | overloaded (18.2 s) |
+| Flood of 2000 jobs, committed submits per second | 52.6 | 49.0 |
+| Flood of 2000 jobs, jobs per second end to end | 47.8 | 39.3 |
+| Kill leader to new leader, median (5 trials) | 241.6 ms | 305.4 ms |
+| Kill leader to first committed write, median | 915.3 ms | 926.1 ms |
+| Acked jobs not executed / duplicate effects | 0 / 0 | 0 / 0 |
+
+Notes:
+- The first-write time includes the client's 15-tick resend interval.
+- Throughput varies from run to run on the same machine. Three 3-node floods gave 47.8, 49.8 and 87.7 jobs/s end to end. The cause was not diagnosed.
+- A thread-dump profile found no scan over all jobs; the time was in fsync and gRPC decoding.
+- At 5 nodes the cluster saturated at 20 jobs/s in this single-JVM setup. Every run showed 0 lost and 0 duplicate effects at both sizes.
+- A 50 jobs/s latency run overloaded the cluster (p50 4.9 s at 3 nodes) and is not reported as a latency figure.
 
 ## 13. Decision log
 | Decision | Choice | Main alternative |
@@ -217,3 +262,5 @@ Filled in later from benchmark runs on real hardware, with the hardware recorded
 | Fencing token | Log index of the `AssignRun` entry | Separate counter or term-based token |
 | Assignment | Workers pull from the leader | Leader pushes to workers |
 | Language and RPC | Java 21, gRPC with protobuf | |
+| Log durability | Group commit: one fsync per batch, messages held until it completes | fsync per append (3.2 submits/s measured) |
+| Snapshots | Sent whole in one message | Chunked transfer |
